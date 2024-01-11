@@ -1,6 +1,7 @@
 package com.ignacio.tasks.service.impl;
 
 import com.cloudinary.Cloudinary;
+import com.cloudinary.utils.ObjectUtils;
 import com.ignacio.tasks.service.IFileUploadService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -15,10 +16,10 @@ import java.util.UUID;
 public class FileUploadServiceImpl implements IFileUploadService {
     private final Cloudinary cloudinary;
 
-    public String uploadFile(MultipartFile multipartFile) throws IOException {
+    public String uploadUserImageFile(MultipartFile multipartFile) throws IOException {
         return cloudinary.uploader()
                 .upload(multipartFile.getBytes(),
-                        Map.of("public_id", UUID.randomUUID().toString()))
+                        ObjectUtils.asMap("folder", "/tasks/users"))
                 .get("url").toString();
     }
 }

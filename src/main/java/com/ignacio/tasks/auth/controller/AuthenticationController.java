@@ -1,6 +1,5 @@
 package com.ignacio.tasks.auth.controller;
 
-import com.ignacio.tasks.auth.dto.request.RefreshTokenRequestDto;
 import com.ignacio.tasks.auth.dto.request.UserLoginRequestDto;
 import com.ignacio.tasks.auth.dto.request.UserRegisterRequestDto;
 import com.ignacio.tasks.auth.dto.response.LoginResponseDto;
@@ -8,11 +7,14 @@ import com.ignacio.tasks.auth.dto.response.MessageDto;
 import com.ignacio.tasks.auth.dto.response.TokenRefreshResponseDto;
 import com.ignacio.tasks.auth.service.AuthenticationService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -45,7 +47,7 @@ public class AuthenticationController {
     })
     @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<MessageDto> register(
-            @RequestPart("user") @Valid UserRegisterRequestDto userRegisterRequestDto,
+            @RequestPart("user") @Parameter(schema = @Schema(type = "string", format = "binary")) @Valid UserRegisterRequestDto userRegisterRequestDto,
             @RequestPart(value = "image", required = false) MultipartFile file
     ) throws IOException {
         return ResponseEntity.status(HttpStatus.CREATED).body(authenticationService.register(userRegisterRequestDto, file));
@@ -74,25 +76,7 @@ public class AuthenticationController {
         return ResponseEntity.ok(authenticationService.login(userLoginRequestDto));
     }
 
-    @Operation(summary = "Log a user out")
-    @ApiResponses(value = {
-            @ApiResponse(
-                    responseCode = "204",
-                    description = "User successfully logged out",
-                    content = {@Content(
-                            mediaType = "application/json", schema = @Schema(implementation = MessageDto.class))
-                    }
-            ),
-            @ApiResponse(
-                    responseCode = "400",
-                    description = "Bad request"),
-    })
-    @PostMapping("/logout")
-    public ResponseEntity<MessageDto> logout() {
-        return authenticationService.logout();
-    }
-
-    @Operation(summary = "Refresh JWT")
+    @Operation(summary = "Refresh Jwt")
     @ApiResponses(value = {
             @ApiResponse(
                     responseCode = "200",
@@ -100,14 +84,13 @@ public class AuthenticationController {
                     content = {@Content(
                             mediaType = "application/json", schema = @Schema(implementation = TokenRefreshResponseDto.class))
                     }
-            ),
-            @ApiResponse(
-                    responseCode = "403",
-                    description = "Refresh token is not in database"),
+            )
     })
-    @PostMapping("/refreshtoken")
+    @PostMapping("/refresh-token")
     public ResponseEntity<TokenRefreshResponseDto> refreshToken(
-            @Valid @RequestBody RefreshTokenRequestDto request) throws IOException {
-        return authenticationService.refreshToken(request);
+            HttpServletRequest request, HttpServletResponse response
+    ) throws IOException {
+        return ResponseEntity.ok().body(authenticationService.refreshToken(request, response));
+
     }
 }

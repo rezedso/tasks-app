@@ -1,29 +1,31 @@
 package com.ignacio.tasks.auth.service;
 
-import com.ignacio.tasks.auth.dto.request.RefreshTokenRequestDto;
 import com.ignacio.tasks.auth.dto.request.UserLoginRequestDto;
 import com.ignacio.tasks.auth.dto.request.UserRegisterRequestDto;
 import com.ignacio.tasks.auth.dto.response.LoginResponseDto;
 import com.ignacio.tasks.auth.dto.response.MessageDto;
 import com.ignacio.tasks.auth.dto.response.TokenRefreshResponseDto;
-import com.ignacio.tasks.entity.RefreshToken;
 import com.ignacio.tasks.entity.Role;
+import com.ignacio.tasks.entity.Token;
 import com.ignacio.tasks.entity.User;
 import com.ignacio.tasks.enumeration.ERole;
 import com.ignacio.tasks.exception.TokenRefreshException;
 import com.ignacio.tasks.exception.UserAlreadyExistsException;
 import com.ignacio.tasks.repository.RoleRepository;
+import com.ignacio.tasks.repository.TokenRepository;
 import com.ignacio.tasks.repository.UserRepository;
 import com.ignacio.tasks.service.IFileUploadService;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -40,7 +42,7 @@ public class AuthenticationService {
     private final RoleRepository roleRepository;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
-    private final RefreshTokenService refreshTokenService;
+    private final TokenRepository tokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final IFileUploadService fileUploadService;
 
@@ -53,23 +55,24 @@ public class AuthenticationService {
         return new MessageDto("Successfully registered!");
     }
 
-    public LoginResponseDto login(UserLoginRequestDto userLoginRequestDto) {
-        SecurityContext context = SecurityContextHolder.createEmptyContext();
+    public LoginResponseDto login(UserLoginRequestDto request) {
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
-                        userLoginRequestDto.getUsername(),
-                        userLoginRequestDto.getPassword()
+                        request.getEmail(),
+                        request.getPassword()
                 )
         );
-        context.setAuthentication(authentication);
         UserDetailsImpl userDetails = (UserDetailsImpl) authentication.getPrincipal();
-        String jwtToken = jwtService.generateJwtToken(userDetails);
-        RefreshToken refreshToken = refreshTokenService.createRefreshToken(userDetails.getId());
+
+        var user = userRepository.findByEmail(request.getEmail()).orElseThrow();
+        var jwt = jwtService.generateRefreshToken(userDetails);
+        var refreshToken = jwtService.generateRefreshToken(userDetails);
+
+        revokeAllUserTokens(user);
+        saveUserToken(user,jwt);
 
         List<String> roles = userDetails.getAuthorities().stream().map(GrantedAuthority::getAuthority)
                 .collect(Collectors.toList());
-
-        User user = userRepository.findById(userDetails.getId()).get();
 
         return LoginResponseDto.builder()
                 .id(userDetails.getId())
@@ -77,34 +80,35 @@ public class AuthenticationService {
                 .roles(roles)
                 .username(userDetails.getUsername())
                 .imageUrl(user.getImageUrl())
-                .refreshToken(refreshToken.getToken())
-                .accessToken(jwtToken)
+                .accessToken(jwt)
+                .refreshToken(refreshToken)
                 .build();
     }
 
-    public ResponseEntity<MessageDto> logout() {
-        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-        if (!Objects.equals(principal.toString(), "anonymousUser")) {
-            Long userId = ((UserDetailsImpl) principal).getId();
-            refreshTokenService.deleteByUser(userId);
-            return ResponseEntity.status(HttpStatus.NO_CONTENT)
-                    .body(new MessageDto("You've been logged out"));
-        }
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new MessageDto("Log out failed"));
-    }
+    public TokenRefreshResponseDto refreshToken(HttpServletRequest request, HttpServletResponse response) {
+        final String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
+        final String refreshToken;
+        final String userEmail;
 
-    public ResponseEntity<TokenRefreshResponseDto> refreshToken(RefreshTokenRequestDto request) {
-        String requestRefreshToken = request.getRefreshToken();
-        return refreshTokenService.findByToken(requestRefreshToken)
-                .map(refreshTokenService::verifyExpiration)
-                .map(RefreshToken::getUser)
-                .map(user -> {
-                    String token = jwtService.generateJwtFromUsername(user.getUsername());
-                    return ResponseEntity.ok(TokenRefreshResponseDto.builder()
-                            .accessToken(token).refreshToken(requestRefreshToken).build());
-                })
-                .orElseThrow(() -> new TokenRefreshException(requestRefreshToken,
-                        "Refresh token is not in database. Please make a new log in."));
+        if(authHeader == null || !authHeader.startsWith("Bearer ")){
+            return null;
+        }
+
+        refreshToken=authHeader.substring(7);
+        userEmail = jwtService.extractUsername(refreshToken);
+
+        if(userEmail!=null){
+            var user = userRepository.findByEmail(userEmail).orElseThrow();
+            UserDetails userDetails = UserDetailsImpl.build(user);
+            if(jwtService.isTokenValid(refreshToken,userDetails)){
+                var accessToken = jwtService.generateToken(userDetails);
+                revokeAllUserTokens(user);
+                saveUserToken(user,accessToken);
+                System.out.println("Token refreshed");
+                return new  TokenRefreshResponseDto(accessToken,refreshToken);
+            }
+        }
+        throw new TokenRefreshException(refreshToken,"Refresh token is not in database");
     }
 
     private Set<Role> assignUserRoles(User user) {
@@ -133,7 +137,7 @@ public class AuthenticationService {
                 .build();
 
         if (file != null) {
-            String imageUrl = fileUploadService.uploadFile(file);
+            String imageUrl = fileUploadService.uploadUserImageFile(file);
             user.setImageUrl(imageUrl);
         }
         return user;
@@ -149,4 +153,24 @@ public class AuthenticationService {
         }
     }
 
+    private void revokeAllUserTokens(User user) {
+        var validUserTokens = tokenRepository.findAllValidTokensByUser(user.getId());
+        if (validUserTokens.isEmpty())
+            return;
+        validUserTokens.forEach(token -> {
+            token.setExpired(true);
+            token.setRevoked(true);
+        });
+        tokenRepository.saveAll(validUserTokens);
+    }
+
+    private void saveUserToken(User user, String jwtToken) {
+        var token = Token.builder()
+                .user(user)
+                .token(jwtToken)
+                .expired(false)
+                .revoked(false)
+                .build();
+        tokenRepository.save(token);
+    }
 }

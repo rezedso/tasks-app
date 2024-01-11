@@ -7,12 +7,16 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
 import java.security.Key;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 
 @Component
 @RequiredArgsConstructor
@@ -24,49 +28,62 @@ public class JwtService {
     @Value("${ignacio.app.jwtRefreshExpirationMs}")
     private Long refreshExpirationMs;
 
-    private static final Logger logger= LoggerFactory.getLogger(JwtService.class);
+    private static final Logger logger = LoggerFactory.getLogger(JwtService.class);
 
-    public String generateJwtToken(UserDetailsImpl userPrincipal) {
-        return generateJwtFromUsername(userPrincipal.getUsername());
+    public String extractUsername(String token) {
+        return extractClaim(token, Claims::getSubject);
     }
 
-    public String generateJwtFromUsername(String username) {
-        Instant now = Instant.now();
-        Instant expiration = now.plus(jwtExpirationMs, ChronoUnit.MILLIS);
-        return Jwts
-                .builder()
-                .signWith(key(), SignatureAlgorithm.HS384)
-                .setSubject(username)
-                .setIssuedAt(Date.from(now))
-                .setExpiration(Date.from(expiration))
+    private <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+
+    public String generateToken(UserDetails userDetails){
+        return generateToken(new HashMap<>(),userDetails);
+    }
+
+    public String generateToken(Map<String, Object> extraClaims, UserDetails userDetails) {
+        return buildToken(extraClaims,userDetails,jwtExpirationMs);
+    }
+
+    public String generateRefreshToken(UserDetails userDetails) {
+        return buildToken(new HashMap<>(),userDetails,refreshExpirationMs);
+    }
+
+    private String buildToken(Map<String, Object> extraClaims, UserDetails userDetails, Long jwtExpirationMs) {
+        return Jwts.builder()
+                .setClaims(extraClaims)
+                .setSubject(userDetails.getUsername())
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + jwtExpirationMs))
+                .signWith(getSignInKey(),SignatureAlgorithm.HS256)
                 .compact();
     }
 
-    public String getUsernameFromJwt(String jwt){
+    public boolean isTokenValid(String token, UserDetails userDetails){
+        final String username = extractUsername(token);
+        return username.equals(userDetails.getUsername()) && !isTokenExpired(token);
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    private Date extractExpiration(String token) {
+        return extractClaim(token,Claims::getExpiration);
+    }
+
+    private Claims extractAllClaims(String token) {
         return Jwts.parserBuilder()
-                .setSigningKey(key())
+                .setSigningKey(getSignInKey())
                 .build()
-                .parseClaimsJws(jwt)
-                .getBody().getSubject();
+                .parseClaimsJws(token)
+                .getBody();
     }
 
-    private Key key() {
-        return Keys.hmacShaKeyFor(Decoders.BASE64.decode(secretKey));
-    }
-
-    public boolean isJwtValid(String jwt) {
-        try {
-            Jwts.parserBuilder().setSigningKey(key()).build().parse(jwt);
-            return true;
-        } catch (MalformedJwtException e) {
-            logger.error("Invalid JWT token: {}", e.getMessage());
-        } catch (ExpiredJwtException e) {
-            logger.error("JWT token is expired: {}", e.getMessage());
-        } catch (UnsupportedJwtException e) {
-            logger.error("JWT token is unsupported: {}", e.getMessage());
-        } catch (IllegalArgumentException e) {
-            logger.error("JWT claims string is empty: {}", e.getMessage());
-        }
-        return false;
+    private Key getSignInKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+        return Keys.hmacShaKeyFor(keyBytes);
     }
 }

@@ -7,9 +7,12 @@ import com.ignacio.tasks.dto.response.ListResponseDto;
 import com.ignacio.tasks.entity.Board;
 import com.ignacio.tasks.entity.List;
 import com.ignacio.tasks.entity.User;
+import com.ignacio.tasks.enumeration.EAction;
+import com.ignacio.tasks.enumeration.EEntityType;
 import com.ignacio.tasks.exception.ResourceNotFoundException;
 import com.ignacio.tasks.repository.BoardRepository;
 import com.ignacio.tasks.repository.ListRepository;
+import com.ignacio.tasks.service.IAuditLogService;
 import com.ignacio.tasks.service.IBoardService;
 import com.ignacio.tasks.service.IListService;
 import com.ignacio.tasks.service.IUtilService;
@@ -28,6 +31,7 @@ import java.util.Set;
 public class ListServiceImpl implements IListService {
     private final ListRepository listRepository;
     private final ModelMapper modelMapper;
+    private final IAuditLogService auditLogService;
 
     @Transactional
     public ListResponseDto updateList(UpdateListRequestDto updateListRequestDto, Long listId) {
@@ -38,6 +42,8 @@ public class ListServiceImpl implements IListService {
                 !listToUpdate.getName().equals(updateListRequestDto.getName())) {
             listToUpdate.setName(updateListRequestDto.getName());
         }
+
+        auditLogService.createAuditLog(listToUpdate.getId(), EEntityType.LIST, EAction.UPDATE, listToUpdate.getName());
         return modelMapper.map(listToUpdate, ListResponseDto.class);
     }
 }
